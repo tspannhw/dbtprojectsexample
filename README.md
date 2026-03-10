@@ -1,147 +1,416 @@
---------------------------------------------------------------------------------
-
-
-1. Architectural Foundations for ELT Success
-
-ELT flips the traditional sequence by loading raw data into the warehouse before transformation. This utilizes Snowflake's massive processing power for the transformation layer, reducing bottlenecks associated with external processing.
-
-Database Design
-
-A proven architectural pattern involves the separation of concerns through primary databases:
-
-* Raw Database: Acts as the landing zone for untransformed source data. This maintains source fidelity and provides an auditable foundation.
-* Analytics Database: The domain of the transformation layer where dbt creates business-ready models, views, and tables.
-* Snapshots Database (Optional): Recommended specifically for Blue-Green deployments to store snapshot models, preventing the loss of historical continuity during database swaps.
-
-Compute Resource Allocation
-
-To prevent resource contention, virtual warehouses should be dedicated to specific functional workloads:
-
-* Loading Warehouse: For data ingestion tools.
-* Transforming Warehouse: Optimized for dbt runs (larger warehouses often provide better price-performance for complex runs).
-* Reporting Warehouse: For BI tools and analyst queries, typically configured with shorter auto-suspend times (1–2 minutes) to minimize idle costs.
-
-
---------------------------------------------------------------------------------
-
-
-2. Core dbt Project Structure
-
-Effective analytics engineering relies on consistent patterns to move data from "source-conformed" (external systems) to "business-conformed" (internal definitions).
-
-The Three-Layer Transformation Arc
-
-Layer	Purpose	Characteristics
-Staging	Atomic building blocks	Light transformations, standardized naming, type casting, and data quality cleanup.
-Intermediate	Purpose-built steps	Stacking logic to prepare models for joining into business entities; avoids complex logic in Marts.
-Marts	Business-defined entities	Wide, rich models representing the entities the organization cares about (e.g., dim_customers, fct_orders).
-
-
---------------------------------------------------------------------------------
-
-
-3. Snowflake-Specific Materializations and Features
-
-Materialization Strategies
-
-dbt supports several materializations on Snowflake, each suited for different performance and cost requirements:
-
-* Views: Default materialization; best for simple logic or small datasets.
-* Tables: Direct storage; faster for downstream queries but consumes more storage.
-* Incremental: Processes only new or changed data. On Snowflake, this defaults to a MERGE statement.
-* Dynamic Tables: A Snowflake-native materialization that simplifies continuous data processing. They support configurations like target_lag (time-based or downstream) and refresh_mode (AUTO, FULL, or INCREMENTAL).
-
-Cost and Performance Features
-
-* Transient Tables: These tables lack a "Fail-safe" period, which can reduce storage costs by up to 50%. They maintain Time Travel for up to one day, making them ideal for intermediate models.
-* Clustering: Optimizes query performance on very large tables (>1TB) by co-locating similar data. dbt supports this via the cluster_by configuration.
-* Zero-Copy Cloning: Allows for the creation of instant database or table copies without duplicating storage. This is vital for testing changes against production-grade data in CI/CD pipelines.
-
-
---------------------------------------------------------------------------------
-
-
-4. Advanced Deployment: Blue-Green Methodology
-
-Blue-Green deployment involves running two identical databases—PROD and STAGE. One serves live traffic while the other is updated and tested.
-
-Implementation Workflow
-
-1. dbt run: Target the STAGE database to rebuild models without affecting production.
-2. dbt test: Validate data quality in STAGE. If tests fail, the job exits before publication.
-3. Swap: Execute a swap_database operation using Snowflake’s unique ALTER DATABASE analytics_db SWAP WITH stage_db command. This renames both databases in a single, atomic operation.
-
-Critical Implementation Notes
-
-* The ref Macro Override: Because database names change during swaps, views that store hardcoded database references can break. Users must often overwrite the ref macro to use relative references (schema.object) instead of absolute ones (database.schema.object).
-* Snapshots: Snapshots must be stored in a non-swapping database to maintain row-level history continuity.
-
-
---------------------------------------------------------------------------------
-
-
-5. Access Control and Governance
-
-Privilege Management for dbt Objects
-
-Managing dbt projects within Snowflake requires specific privileges on the DBT PROJECT object:
-
-* CREATE: To deploy from workspaces.
-* ALTER/DROP: To modify or delete projects.
-* EXECUTE: To run dbt commands and list files.
-* MONITOR: To view project details, run history, and monitoring information in Snowsight.
-
-Role Hierarchy
-
-A well-designed hierarchy typically includes:
-
-* Loader Roles: For ingestion.
-* Transformer Roles: For dbt and data engineers (least-privilege per environment).
-* Reporter Roles: For analysts and BI tools.
-
-
---------------------------------------------------------------------------------
-
-
-6. Enhanced Monitoring via Query Tags
-
-Query tags are optional session-level parameters (up to 2,000 characters) that link SQL statements to metadata.
-
-Benefits for Cost Attribution
-
-Query tags allow organizations to attribute compute spend more granularly than by user account alone. By tagging queries with model names, environment info, or pipeline IDs, teams can:
-
-* Aggregate costs for specific dashboards.
-* Monitor total runtime for individual data models.
-* Debug slow queries in the Snowflake QUERY_HISTORY view.
-
-Implementation Best Practices
-
-* JSON Strings: Using a JSON object within the query tag (e.g., {"model": "fct_orders", "env": "prod"}) allows for easier parsing and downstream analysis.
-* Configuration Levels: Tags can be set in profiles.yml (default), dbt_project.yml (folder level), or within individual model config blocks.
-
-
---------------------------------------------------------------------------------
-
-
-7. Operational Best Practices Summary
-
-Category	Recommendation
-Configuration	Use environment variables for credentials; enable client_session_keep_alive for long-running projects.
-Performance	Apply clustering to large fact tables (>1TB); use incremental models for append-only data.
-Cost	Use transient tables for intermediate models; right-size warehouses based on actual workload needs.
-Workflow	Implement pre-commit hooks for SQL linting; document models with descriptions and column-level docs.
-Quality	Implement generic tests (uniqueness, not-null) on all primary keys; monitor data freshness.
-
-
---------------------------------------------------------------------------------
-
-
-8. Snowflake-Native dbt Integration
-
-Snowflake now supports "dbt Projects on Snowflake," allowing users to manage dbt Core projects directly within the Snowflake ecosystem.
-
-* dbt Project Objects: Schema-level objects that contain versioned source files.
-* Snowflake Workspaces: A Git-connected web IDE within Snowsight for visualizing, testing, and running dbt projects.
-* Snowflake CLI: Integrated commands (snow dbt deploy, snow dbt execute) allow for managing projects from the command line, facilitating CI/CD integration.
-* Tasks: Snowflake tasks can be used to schedule and orchestrate dbt project runs natively without external orchestrators.
+# dbt Projects on Snowflake - Comprehensive Course
+
+A complete **40-minute training course** on building, deploying, and monitoring dbt Projects on Snowflake. Learn to run dbt Core transformations as native Snowflake objects without external infrastructure.
+
+---
+
+## What is dbt Projects on Snowflake?
+
+dbt Projects on Snowflake enables you to deploy and run **dbt Core** transformations as native Snowflake objects. No external servers, no dbt Cloud subscription required - everything runs inside Snowflake using your existing warehouses and security model.
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                        dbt Projects on Snowflake                            │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│   ┌─────────────┐    ┌─────────────┐    ┌─────────────┐                    │
+│   │   Git Repo  │───►│  Workspace  │───►│ DBT PROJECT │                    │
+│   │   (Source)  │    │   (IDE)     │    │  (Object)   │                    │
+│   └─────────────┘    └─────────────┘    └──────┬──────┘                    │
+│                                                │                            │
+│                           ┌────────────────────┼────────────────────┐       │
+│                           │                    │                    │       │
+│                           ▼                    ▼                    ▼       │
+│                    ┌───────────┐        ┌───────────┐        ┌───────────┐ │
+│                    │  EXECUTE  │        │ Snowflake │        │ Snowsight │ │
+│                    │    DBT    │        │   Tasks   │        │ Monitoring│ │
+│                    │  PROJECT  │        │ (Schedule)│        │    UI     │ │
+│                    └───────────┘        └───────────┘        └───────────┘ │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Key Benefits
+
+| Traditional dbt | dbt Projects on Snowflake |
+|----------------|---------------------------|
+| External server required | Runs inside Snowflake |
+| Separate credentials | Native Snowflake RBAC |
+| Multiple billing sources | Single Snowflake bill |
+| Network connectivity needed | No egress required |
+| dbt Cloud subscription | No additional subscription |
+
+---
+
+## Course Overview
+
+| Section | Duration | Topics | Document |
+|---------|----------|--------|----------|
+| **Section 1** | 10 min | Introduction, Architecture, Setup | [01-introduction-setup.md](docs/01-introduction-setup.md) |
+| **Section 2** | 10 min | Workspaces, Models, Sources, Tests, Macros | [02-development-models.md](docs/02-development-models.md) |
+| **Section 3** | 10 min | Deployment, EXECUTE, Tasks, Versioning | [03-transformation-deployment.md](docs/03-transformation-deployment.md) |
+| **Section 4** | 10 min | Monitoring, Cost Control, Best Practices | [04-monitoring-best-practices.md](docs/04-monitoring-best-practices.md) |
+
+### Additional Resources
+
+| Resource | Description |
+|----------|-------------|
+| [Quick Reference Card](docs/quick-reference-card.md) | One-page cheat sheet with all commands |
+| [Troubleshooting Guide](docs/troubleshooting-guide.md) | Solutions to common problems |
+| [Course Overview](docs/00-course-overview.md) | Detailed course structure |
+
+---
+
+## What You'll Learn
+
+- **Deploy** dbt Core projects as native Snowflake objects
+- **Develop** using Snowflake Workspaces (Git-connected IDE)
+- **Master** all dbt Core commands (build, run, test, seed, snapshot, etc.)
+- **Schedule** dbt executions with Snowflake Tasks
+- **Monitor** executions via Snowsight and programmatic APIs
+- **Optimize** costs with incremental models and resource monitors
+- **Build** a Streamlit monitoring dashboard
+
+---
+
+## Quick Start (5 minutes)
+
+### Prerequisites
+
+- Snowflake account with appropriate privileges
+- [Snowflake CLI](https://docs.snowflake.com/en/developer-guide/snowflake-cli-v2/installation/installation) installed (`snow --version`)
+- Basic SQL knowledge
+
+### Step 1: Set Up Snowflake Objects
+
+```sql
+-- Create database and schemas
+CREATE DATABASE IF NOT EXISTS COURSE_DB;
+CREATE SCHEMA IF NOT EXISTS COURSE_DB.DBT_PROJECTS;
+CREATE SCHEMA IF NOT EXISTS COURSE_DB.RAW;
+CREATE SCHEMA IF NOT EXISTS COURSE_DB.STAGING;
+CREATE SCHEMA IF NOT EXISTS COURSE_DB.SILVER;
+CREATE SCHEMA IF NOT EXISTS COURSE_DB.GOLD;
+
+-- Create warehouse
+CREATE WAREHOUSE IF NOT EXISTS DBT_WH 
+    WITH WAREHOUSE_SIZE = 'XSMALL'
+    AUTO_SUSPEND = 60
+    AUTO_RESUME = TRUE;
+
+-- Enable monitoring
+ALTER SCHEMA COURSE_DB.DBT_PROJECTS SET LOG_LEVEL = 'INFO';
+ALTER SCHEMA COURSE_DB.DBT_PROJECTS SET TRACE_LEVEL = 'ALWAYS';
+```
+
+> **Tip**: Run the full setup script at `scripts/01_setup_snowflake_objects.sql` for complete sample data.
+
+### Step 2: Deploy the dbt Project
+
+```bash
+# Using Snowflake CLI
+snow dbt deploy course_dbt_project \
+    --source ./dbt_project \
+    --database COURSE_DB \
+    --schema DBT_PROJECTS \
+    --force
+```
+
+Or using SQL:
+```sql
+-- Upload files to stage first, then:
+CREATE DBT PROJECT COURSE_DB.DBT_PROJECTS.COURSE_DBT_PROJECT
+    FROM '@COURSE_DB.DBT_PROJECTS.DBT_STAGE/course_dbt_project'
+    DBT_VERSION = '1.10.15'
+    DEFAULT_TARGET = 'prod';
+```
+
+### Step 3: Execute the Pipeline
+
+```bash
+# Build all models (run + test + seed + snapshot)
+snow dbt execute course_dbt_project build \
+    --database COURSE_DB \
+    --schema DBT_PROJECTS
+```
+
+Or using SQL:
+```sql
+EXECUTE DBT PROJECT COURSE_DB.DBT_PROJECTS.COURSE_DBT_PROJECT
+    WAREHOUSE = 'DBT_WH'
+    ARGS = 'build';
+```
+
+### Step 4: Schedule Daily Runs
+
+```sql
+CREATE OR REPLACE TASK COURSE_DB.DBT_PROJECTS.DAILY_DBT_BUILD
+    WAREHOUSE = DBT_WH
+    SCHEDULE = 'USING CRON 0 6 * * * UTC'
+AS
+    EXECUTE DBT PROJECT COURSE_DB.DBT_PROJECTS.COURSE_DBT_PROJECT
+        ARGS = 'build --target prod';
+
+ALTER TASK COURSE_DB.DBT_PROJECTS.DAILY_DBT_BUILD RESUME;
+```
+
+### Step 5: Monitor Execution
+
+```sql
+-- View recent executions
+SELECT 
+    query_id,
+    object_name,
+    execution_status,
+    DATEDIFF('second', query_start_time, query_end_time) AS duration_sec
+FROM TABLE(INFORMATION_SCHEMA.DBT_PROJECT_EXECUTION_HISTORY())
+ORDER BY query_start_time DESC
+LIMIT 10;
+
+-- Get logs from last run
+SELECT SYSTEM$GET_DBT_LOG(
+    (SELECT query_id FROM TABLE(INFORMATION_SCHEMA.DBT_PROJECT_EXECUTION_HISTORY())
+     ORDER BY query_start_time DESC LIMIT 1)
+);
+```
+
+---
+
+## Project Structure
+
+```
+VoyaDBTProjectsCourse/
+├── README.md                              # This file
+│
+├── docs/                                  # Course documentation
+│   ├── 00-course-overview.md             # Course introduction
+│   ├── 01-introduction-setup.md          # Section 1: Architecture & Setup
+│   ├── 02-development-models.md          # Section 2: Models & Development
+│   ├── 03-transformation-deployment.md   # Section 3: Deployment & Tasks
+│   ├── 04-monitoring-best-practices.md   # Section 4: Monitoring & Optimization
+│   ├── quick-reference-card.md           # Command cheat sheet
+│   └── troubleshooting-guide.md          # Problem-solving guide
+│
+├── dbt_project/                           # Complete working dbt project
+│   ├── dbt_project.yml                   # Project configuration
+│   ├── profiles.yml.example              # Connection template
+│   ├── packages.yml                      # Package dependencies
+│   ├── models/
+│   │   ├── staging/                      # Bronze layer (views)
+│   │   │   ├── sources.yml               # Source definitions
+│   │   │   ├── stg_customers.sql
+│   │   │   ├── stg_orders.sql
+│   │   │   ├── stg_products.sql
+│   │   │   └── stg_order_items.sql
+│   │   ├── intermediate/                 # Silver layer (tables)
+│   │   │   ├── int_customer_orders.sql
+│   │   │   └── int_order_details.sql
+│   │   └── marts/                        # Gold layer (tables)
+│   │       ├── dim_customers.sql
+│   │       ├── dim_products.sql
+│   │       ├── fct_orders.sql
+│   │       ├── fct_order_items.sql
+│   │       └── agg_monthly_sales.sql
+│   ├── macros/                           # Reusable SQL
+│   │   ├── generate_surrogate_key.sql
+│   │   ├── operations.sql
+│   │   └── utility_macros.sql
+│   ├── tests/                            # Data quality tests
+│   │   ├── test_order_totals_match_items.sql
+│   │   ├── test_no_future_order_dates.sql
+│   │   └── test_customer_segment_consistency.sql
+│   ├── seeds/                            # CSV reference data
+│   │   ├── country_codes.csv
+│   │   └── order_statuses.csv
+│   └── snapshots/                        # SCD Type 2
+│       ├── snap_customers.sql
+│       └── snap_products.sql
+│
+├── scripts/                               # SQL & Bash scripts
+│   ├── 01_setup_snowflake_objects.sql    # Create DB, schemas, sample data
+│   ├── 02_deploy_project.sh              # Automated deployment
+│   ├── 03_schedule_tasks.sql             # Task scheduling
+│   └── 04_monitoring_queries.sql         # Monitoring queries
+│
+└── streamlit/                             # Monitoring dashboard
+    ├── dbt_monitor_dashboard.py          # Streamlit app
+    ├── requirements.txt                  # Python dependencies
+    └── secrets.toml.example              # Connection template
+```
+
+---
+
+## dbt Commands Reference
+
+### Essential Commands
+
+| Command | Purpose | Example |
+|---------|---------|---------|
+| `build` | Run + test + seed + snapshot | `ARGS = 'build'` |
+| `run` | Execute models | `ARGS = 'run'` |
+| `test` | Run data tests | `ARGS = 'test'` |
+| `seed` | Load CSV files | `ARGS = 'seed'` |
+| `snapshot` | Run SCD Type 2 | `ARGS = 'snapshot'` |
+| `compile` | Generate SQL (no execution) | `ARGS = 'compile'` |
+| `list` | List project resources | `ARGS = 'list'` |
+
+### Selection Syntax
+
+| Pattern | Meaning | Example |
+|---------|---------|---------|
+| `model` | Single model | `--select dim_customers` |
+| `model+` | Model + downstream | `--select stg_customers+` |
+| `+model` | Model + upstream | `--select +fct_orders` |
+| `folder.*` | All in folder | `--select staging.*` |
+| `tag:name` | By tag | `--select tag:daily` |
+
+### SQL Command Examples
+
+```sql
+-- Run all models
+EXECUTE DBT PROJECT my_project ARGS = 'run';
+
+-- Run specific folder
+EXECUTE DBT PROJECT my_project ARGS = 'run --select staging.*';
+
+-- Run with downstream dependencies
+EXECUTE DBT PROJECT my_project ARGS = 'run --select stg_customers+';
+
+-- Full refresh incremental models
+EXECUTE DBT PROJECT my_project ARGS = 'run --full-refresh';
+
+-- Test specific models
+EXECUTE DBT PROJECT my_project ARGS = 'test --select dim_customers fct_orders';
+```
+
+---
+
+## SQL Reference
+
+| Command | Purpose | Example |
+|---------|---------|---------|
+| `CREATE DBT PROJECT` | Create new project | `CREATE DBT PROJECT name FROM '@stage'` |
+| `ALTER DBT PROJECT` | Modify/add versions | `ALTER DBT PROJECT name ADD VERSION v2 FROM '...'` |
+| `EXECUTE DBT PROJECT` | Run dbt commands | `EXECUTE DBT PROJECT name ARGS = 'build'` |
+| `DROP DBT PROJECT` | Remove project | `DROP DBT PROJECT IF EXISTS name` |
+| `SHOW DBT PROJECTS` | List all projects | `SHOW DBT PROJECTS IN DATABASE db` |
+| `DESCRIBE DBT PROJECT` | View project details | `DESCRIBE DBT PROJECT name` |
+
+---
+
+## Monitoring
+
+### Quick Monitoring Queries
+
+```sql
+-- Recent executions
+SELECT * FROM TABLE(INFORMATION_SCHEMA.DBT_PROJECT_EXECUTION_HISTORY())
+WHERE query_start_time >= DATEADD('day', -7, CURRENT_TIMESTAMP())
+ORDER BY query_start_time DESC;
+
+-- Get execution logs
+SELECT SYSTEM$GET_DBT_LOG('<query_id>');
+
+-- Get artifacts (compiled SQL, manifest)
+SELECT SYSTEM$LOCATE_DBT_ARTIFACTS('<query_id>');
+```
+
+### Enable Monitoring
+
+```sql
+ALTER SCHEMA <schema> SET LOG_LEVEL = 'INFO';
+ALTER SCHEMA <schema> SET TRACE_LEVEL = 'ALWAYS';
+ALTER SCHEMA <schema> SET METRIC_LEVEL = 'ALL';
+```
+
+### Streamlit Dashboard
+
+A complete monitoring dashboard is included at `streamlit/dbt_monitor_dashboard.py`:
+
+```bash
+cd streamlit
+pip install -r requirements.txt
+streamlit run dbt_monitor_dashboard.py
+```
+
+---
+
+## Supported dbt Versions
+
+| Version | Status |
+|---------|--------|
+| 1.9.4 | Supported |
+| 1.10.15 | Supported (Latest) |
+
+Check supported versions:
+```sql
+SELECT SYSTEM$SUPPORTED_DBT_VERSIONS();
+```
+
+---
+
+## Troubleshooting
+
+### Common Issues
+
+| Issue | Solution |
+|-------|----------|
+| "Insufficient privileges" | Grant `CREATE DBT PROJECT` on **schema** (not database) |
+| "Object does not exist" | Check path with `LIST @stage/path/` |
+| "Invalid YAML" | Validate locally with `dbt parse` |
+| "Unable to fetch packages" | Set up `EXTERNAL_ACCESS_INTEGRATIONS` |
+
+See the full [Troubleshooting Guide](docs/troubleshooting-guide.md) for detailed solutions.
+
+### Quick Debug
+
+```sql
+-- 1. Check project exists
+SHOW DBT PROJECTS LIKE '%PROJECT_NAME%' IN DATABASE COURSE_DB;
+
+-- 2. Find failed runs
+SELECT query_id, error_message
+FROM TABLE(INFORMATION_SCHEMA.DBT_PROJECT_EXECUTION_HISTORY())
+WHERE execution_status = 'FAILED'
+ORDER BY query_start_time DESC LIMIT 1;
+
+-- 3. Get logs
+SELECT SYSTEM$GET_DBT_LOG('<query_id_from_above>');
+```
+
+---
+
+## Resources
+
+### Official Documentation
+
+| Resource | Link |
+|----------|------|
+| dbt Projects on Snowflake | [docs.snowflake.com](https://docs.snowflake.com/en/user-guide/dbt-projects/overview) |
+| dbt Core Documentation | [docs.getdbt.com](https://docs.getdbt.com/) |
+| Snowflake CLI | [docs.snowflake.com/cli](https://docs.snowflake.com/en/developer-guide/snowflake-cli-v2/index) |
+| dbt Best Practices | [docs.getdbt.com/best-practices](https://docs.getdbt.com/best-practices) |
+
+### Community
+
+| Resource | Link |
+|----------|------|
+| dbt Slack | [getdbt.com/community](https://www.getdbt.com/community/) |
+| dbt Discourse | [discourse.getdbt.com](https://discourse.getdbt.com/) |
+| Snowflake Community | [community.snowflake.com](https://community.snowflake.com/) |
+
+### Course Reference Links
+
+- [CI/CD Tutorial](https://docs.snowflake.com/en/user-guide/tutorials/dbt-projects-on-snowflake-ci-cd-tutorial)
+- [Monitoring & Observability](https://docs.snowflake.com/en/user-guide/data-engineering/dbt-projects-on-snowflake-monitoring-observability)
+- [Developer Guide](https://www.snowflake.com/en/developers/guides/dbt-projects-on-snowflake/)
+
+---
+
+## License
+
+This course material is provided for educational purposes.
+
+---
+
+*Built with [Cortex Code](https://docs.snowflake.com/en/user-guide/cortex-code/cortex-code) - Snowflake's AI-powered development assistant*
